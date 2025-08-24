@@ -1,0 +1,916 @@
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(readr)
+library(plotly)
+library(shiny)
+library(randomForest)
+library(ggpmisc)
+library(ggrepel)
+library(ggpubr)
+library(forecast)
+library(car)
+library(lmtest)
+library(glmnet)
+
+
+# Summarise defensive metrics per team per season
+regular_summary <- regular_season_data %>%
+  group_by(TEAM_ID, TEAM_NAME, SEASON_YEAR) %>%
+  summarise(across(c(STL, BLK, DREB, TOV, FG_PCT, PLUS_MINUS), mean, na.rm = TRUE), .groups = "drop")
+
+playoff_summary <- play_off_data %>%
+  group_by(TEAM_ID, TEAM_NAME, SEASON_YEAR) %>%
+  summarise(across(c(STL, BLK, DREB, TOV, FG_PCT, PLUS_MINUS), mean, na.rm = TRUE), .groups = "drop")
+
+# Rename columns for clarity 
+regular_summary <- regular_summary %>%
+  rename_with(~ paste0(.x, "_Regular"), c(STL, BLK, DREB, TOV, FG_PCT, PLUS_MINUS))
+
+playoff_summary <- playoff_summary %>%
+  rename_with(~ paste0(.x, "_Playoff"), c(STL, BLK, DREB, TOV, FG_PCT, PLUS_MINUS))
+
+# Merge datasets 
+merged_data <- inner_join(regular_summary, playoff_summary,
+                          by = c("TEAM_ID", "TEAM_NAME", "SEASON_YEAR"))
+View(merged_data)
+
+# --- Summarize Regular Season Defensive Stats by Team and Season ---
+# Creates a summary table with average steals, blocks, defensive rebounds, turnovers,
+# and plus-minus per team and season for the regular season.
+
+# Summarise regular season
+regular_summary2 <- regular_season_data %>%
+  group_by(TEAM_ID, TEAM_NAME, SEASON_YEAR) %>%
+  summarise(across(c(STL, BLK, DREB, TOV, PLUS_MINUS), mean, na.rm = TRUE), .groups = "drop")
+
+# Summarise playoff season
+playoff_summary2 <- play_off_data %>%
+  group_by(TEAM_ID, TEAM_NAME, SEASON_YEAR) %>%
+  summarise(across(c(STL, BLK, DREB, TOV, PLUS_MINUS), mean, na.rm = TRUE), .groups = "drop")
+
+# --- Combine Regular and Playoff Summaries ---
+# Joins both summaries so that each team's regular and playoff stats are side by side for comparison.
+defense_change <- inner_join(
+  regular_summary2, 
+  playoff_summary2, 
+  by = c("TEAM_ID", "TEAM_NAME", "SEASON_YEAR"), 
+  suffix = c("_Regular", "_Playoff")
+)
+
+# --- Calculate the Change in Each Metric from Regular Season to Playoffs ---
+# Calculates the difference in each defensive metric between playoff and regular season.
+defense_change <- defense_change %>%
+  mutate(
+    STL_Diff = STL_Playoff - STL_Regular,
+    BLK_Diff = BLK_Playoff - BLK_Regular,
+    DREB_Diff = DREB_Playoff - DREB_Regular,
+    TOV_Diff = TOV_Playoff - TOV_Regular,
+    PLUS_MINUS_Diff = PLUS_MINUS_Playoff - PLUS_MINUS_Regular
+  )
+
+# --- Reshape Data to Long Format for Plotting ---
+# Converts wide format to long format to make it easier to plot each metric difference.
+defense_change_long <- defense_change %>%
+  pivot_longer(cols = ends_with("_Diff"), names_to = "Metric", values_to = "Change")
+
+# --- Boxplot of Changes Across All Teams ---
+# Visualises the distribution of each metric's change across all teams using boxplots.
+ggplot(defense_change_long, aes(x = Metric, y = Change)) +
+  geom_boxplot(fill = "skyblue") +
+  theme_minimal() +
+  labs(title = "Change in Defensive Metrics from Regular Season to Playoffs",
+       y = "Metric Difference", x = "Defensive Metric")
+
+# --- Average Metric Change per Season ---
+# Calculates the average change in each metric per season across all teams.
+avg_change <- defense_change %>%
+  group_by(SEASON_YEAR) %>%
+  summarise(across(ends_with("_Diff"), mean, na.rm = TRUE))
+
+# identifying changes on a per team basis
+
+defense_change <- inner_join(
+  regular_summary, 
+  playoff_summary, 
+  by = c("TEAM_ID", "TEAM_NAME", "SEASON_YEAR"), 
+  suffix = c("_Regular", "_Playoff")
+)
+
+defense_change <- defense_change %>%
+  mutate(
+    STL_Diff = STL_Playoff - STL_Regular,
+    BLK_Diff = BLK_Playoff - BLK_Regular,
+    DREB_Diff = DREB_Playoff - DREB_Regular,
+    TOV_Diff = TOV_Playoff - TOV_Regular,
+    PLUS_MINUS_Diff = PLUS_MINUS_Playoff - PLUS_MINUS_Regular
+  )
+
+# --- Reshape to Long Format for Per-Team Visualization ---
+defense_long <- defense_change %>%
+  pivot_longer(
+    cols = ends_with("_Diff"),
+    names_to = "Metric",
+    values_to = "Change"
+  )
+
+# --- Bar Plot: Change in Metrics per Team per Season ---
+# Shows each team’s year-by-year change in defensive metrics using a faceted bar chart.
+# Useful for identifying team-specific trends.
+ggplot(defense_long, aes(x = SEASON_YEAR, y = Change, fill = Metric)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ TEAM_NAME, scales = "free_y") +
+  labs(
+    title = "Change in Defensive Metrics from Regular Season to Playoffs (By Team)",
+    x = "Season",
+    y = "Change in Metric"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+
+
+#### Measuring 'Average Team Steals Per Season 2010-2024 ####
+
+regular_yearly <- regular_season_data %>%
+  group_by(SEASON_YEAR) %>%
+  summarise(
+    STL = mean(STL, na.rm = TRUE),
+    BLK = mean(BLK, na.rm = TRUE),
+    DREB = mean(DREB, na.rm = TRUE),
+    TOV = mean(TOV, na.rm = TRUE)
+  ) %>%
+  mutate(Type = "Regular Season")
+
+playoff_yearly <- play_off_data %>%
+  group_by(SEASON_YEAR) %>%
+  summarise(
+    STL = mean(STL, na.rm = TRUE),
+    BLK = mean(BLK, na.rm = TRUE),
+    DREB = mean(DREB, na.rm = TRUE),
+    TOV = mean(TOV, na.rm = TRUE)
+  ) %>%
+  mutate(Type = "Playoffs")
+
+combined_yearly <- bind_rows(regular_yearly, playoff_yearly)
+unique(combined_yearly$SEASON_YEAR)
+
+ggplot(combined_yearly, aes(x = SEASON_YEAR, y = STL, color = Type, group = Type)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_x_discrete() +
+  labs(title = "Average Team Steals per Season (2010–2024)",
+       x = "Season", y = "Average Steals per Team") +
+  theme_minimal()
+
+################################################################################
+
+## Miami Heat ##
+
+# Step 1: Filter data for Miami Heat
+miami_data <- merged_data %>%
+  filter(TEAM_NAME == "Miami Heat")
+
+# Step 2: Create difference scores for inspection
+miami_data$STL_diff <- miami_data$STL_Playoff - miami_data$STL_Regular
+miami_data$BLK_diff <- miami_data$BLK_Playoff - miami_data$BLK_Regular
+miami_data$DREB_diff <- miami_data$DREB_Playoff - miami_data$DREB_Regular
+miami_data$TOV_diff <- miami_data$TOV_Playoff - miami_data$TOV_Regular
+miami_data$PLUS_DIFF <- miami_data$PLUS_MINUS_Playoff - miami_data$PLUS_MINUS_Regular
+
+# Step 3: Shapiro-Wilk Tests
+shapiro.test(miami_data$STL_diff)
+shapiro.test(miami_data$BLK_diff)
+shapiro.test(miami_data$DREB_diff)
+shapiro.test(miami_data$TOV_diff)
+shapiro.test(miami_data$PLUS_DIFF)
+
+# Step 4: As a result of the P values indicating normal distribution t-test applied
+t.test(miami_data$STL_Regular, miami_data$STL_Playoff, paired = TRUE)
+t.test(miami_data$BLK_Regular, miami_data$BLK_Playoff, paired = TRUE)
+t.test(miami_data$DREB_Regular, miami_data$DREB_Playoff, paired = TRUE)
+t.test(miami_data$TOV_Regular, miami_data$TOV_Playoff, paired = TRUE)
+
+# Wilcoxon Signed-Rank Test for PLUS_MINUS
+wilcox.test(miami_data$PLUS_MINUS_Regular, miami_data$PLUS_MINUS_Playoff, paired = TRUE)
+
+# Step 5: MANOVA Model
+miami_manova_model <- manova(cbind(STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular) ~
+                                cbind(STL_Playoff, BLK_Playoff, DREB_Playoff, TOV_Playoff, PLUS_MINUS_Playoff), 
+                              data = miami_data)
+summary(miami_manova_model)
+
+### Running Linear Regression for Miami Heat ###
+
+# DREB vs PLUS_MINUS
+miami_model_dreb <- lm(PLUS_MINUS_Regular ~ DREB_Regular, data = miami_data)
+summary(miami_model_dreb)
+
+# STL vs PLUS_MINUS
+miami_model_stl <- lm(PLUS_MINUS_Regular ~ STL_Regular, data = miami_data)
+summary(miami_model_stl)
+
+# BLK vs PLUS_MINUS
+miami_model_blk <- lm(PLUS_MINUS_Regular ~ BLK_Regular, data = miami_data)
+summary(miami_model_blk)
+        
+
+# Run multiple linear regression using regular season defensive metrics to predict playoff success
+miami_model_playoff <- lm(PLUS_MINUS_Playoff ~ DREB_Regular + STL_Regular + BLK_Regular, data = miami_data)
+
+# View the model summary
+summary(miami_model_playoff)
+
+miami_long <- miami_data %>%
+  select(PLUS_MINUS_Playoff, DREB_Regular, STL_Regular, BLK_Regular) %>%
+  pivot_longer(cols = c(DREB_Regular, STL_Regular, BLK_Regular),
+               names_to = "Metric",
+               values_to = "Value")
+
+ggplot(miami_long, aes(x = Value, y = PLUS_MINUS_Playoff, color = Metric)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "Miami Heat: Regular Season Defensive Metrics vs Playoff Plus-Minus",
+       x = "Regular Season Metric Value",
+       y = "Playoff Plus-Minus",
+       color = "Metric") +
+  theme_minimal()
+
+ggplot(miami_long, aes(x = Value, y = PLUS_MINUS_Playoff, color = Metric)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE) +
+  stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")),
+               formula = y ~ x, parse = TRUE, label.x.npc = "left", label.y.npc = 0.9,
+               size = 3) +
+  labs(title = "Miami Heat: Regular Season Defensive Metrics vs Playoff Plus-Minus",
+       x = "Regular Season Metric Value",
+       y = "Playoff Plus-Minus",
+       color = "Metric") +
+  theme_minimal()
+
+# Create individual linear models
+model_blk <- lm(PLUS_MINUS_Playoff ~ BLK_Regular, data = miami_data)
+model_stl <- lm(PLUS_MINUS_Playoff ~ STL_Regular, data = miami_data)
+model_dreb <- lm(PLUS_MINUS_Playoff ~ DREB_Regular, data = miami_data)
+
+# Extract R² values
+r2_blk <- summary(model_blk)$r.squared
+r2_stl <- summary(model_stl)$r.squared
+r2_dreb <- summary(model_dreb)$r.squared
+
+# Add to legend labels
+labels <- c(
+  paste0("BLK_Regular (R² = ", round(r2_blk, 2), ")"),
+  paste0("STL_Regular (R² = ", round(r2_stl, 2), ")"),
+  paste0("DREB_Regular (R² = ", round(r2_dreb, 2), ")")
+)
+
+# Reshape the data for plotting
+plot_data <- miami_data %>%
+  select(SEASON_YEAR, PLUS_MINUS_Playoff, BLK_Regular, STL_Regular, DREB_Regular) %>%
+  pivot_longer(cols = c(BLK_Regular, STL_Regular, DREB_Regular),
+               names_to = "Metric", values_to = "Value") %>%
+  mutate(Metric = factor(Metric, levels = c("BLK_Regular", "STL_Regular", "DREB_Regular"),
+                         labels = labels))
+
+# Plot
+ggplot(plot_data, aes(x = Value, y = PLUS_MINUS_Playoff, color = Metric)) +
+  geom_point(size = 3, alpha = 0.85) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "solid", size = 1.2) +
+  geom_text_repel(aes(label = SEASON_YEAR), size = 3.2, show.legend = FALSE) +
+  labs(
+    title = "Miami Heat: Regular Season Defensive Metrics vs Playoff Plus-Minus",
+    subtitle = "Comparing DREB, STL, and BLK over the 2010–2024 Seasons",
+    x = "Regular Season Metric Value",
+    y = "Playoff Plus-Minus",
+    color = "Metric (R²)",
+    caption = "Source: NBA team-level data (2010–2024)"
+  ) +
+  theme_dissertation
+
+## Indiana Pacers Tests ##
+
+# Step 1: Filter data for Indiana Pacers
+pacers_data <- merged_data %>%
+  filter(TEAM_NAME == "Indiana Pacers")
+
+# Step 2: Create difference scores for inspection
+pacers_data$STL_diff <- pacers_data$STL_Playoff - pacers_data$STL_Regular
+pacers_data$BLK_diff <- pacers_data$BLK_Playoff - pacers_data$BLK_Regular
+pacers_data$DREB_diff <- pacers_data$DREB_Playoff - pacers_data$DREB_Regular
+pacers_data$TOV_diff <- pacers_data$TOV_Playoff - pacers_data$TOV_Regular
+pacers_data$PLUS_DIFF <- pacers_data$PLUS_MINUS_Playoff - pacers_data$PLUS_MINUS_Regular
+
+# Step 3: Shapiro-Wilk Tests
+shapiro.test(pacers_data$STL_diff)
+shapiro.test(pacers_data$BLK_diff)
+shapiro.test(pacers_data$DREB_diff)
+shapiro.test(pacers_data$TOV_diff)
+shapiro.test(pacers_data$PLUS_DIFF)
+
+# Step 4: As a result of the P values indicating normal distribution t-test applied
+t.test(pacers_data$STL_Regular, pacers_data$STL_Playoff, paired = TRUE)
+t.test(pacers_data$BLK_Regular, pacers_data$BLK_Playoff, paired = TRUE)
+t.test(pacers_data$DREB_Regular, pacers_data$DREB_Playoff, paired = TRUE)
+t.test(pacers_data$TOV_Regular, pacers_data$TOV_Playoff, paired = TRUE)
+t.test(pacers_data$PLUS_MINUS_Regular, pacers_data$PLUS_MINUS_Playoff, paired = TRUE)
+
+# Step 5: Manova
+pacers_manova_model <- manova(cbind(STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular) ~
+                                cbind(STL_Playoff, BLK_Playoff, DREB_Playoff, TOV_Playoff), 
+                              data = pacers_data)
+pacers_manova_model2 <- manova(cbind(BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular) ~
+                                  cbind(BLK_Playoff, DREB_Playoff, TOV_Playoff, PLUS_MINUS_Playoff), 
+                                data = pacers_data)
+
+summary(pacers_manova_model)
+summary(pacers_manova_model2)
+
+## Boston Celtics Tests ##
+
+# Step 1: Filter data for Boston Celtics
+boston_data <- merged_data %>%
+  filter(TEAM_NAME == "Boston Celtics")
+
+# Step 2: Create difference scores for inspection
+boston_data$STL_diff <- boston_data$STL_Playoff - boston_data$STL_Regular
+boston_data$BLK_diff <- boston_data$BLK_Playoff - boston_data$BLK_Regular
+boston_data$DREB_diff <- boston_data$DREB_Playoff - boston_data$DREB_Regular
+boston_data$TOV_diff <- boston_data$TOV_Playoff - boston_data$TOV_Regular
+boston_data$PLUS_DIFF <- boston_data$PLUS_MINUS_Playoff - boston_data$PLUS_MINUS_Regular
+
+# Step 3: Shapiro-Wilk Tests
+shapiro.test(boston_data$STL_diff)
+shapiro.test(boston_data$BLK_diff)
+shapiro.test(boston_data$DREB_diff)
+shapiro.test(boston_data$TOV_diff)
+shapiro.test(boston_data$PLUS_DIFF)
+
+# Step 4: As a result of the P values indicating normal distribution t-test applied
+t.test(boston_data$STL_Regular, boston_data$STL_Playoff, paired = TRUE)
+t.test(boston_data$BLK_Regular, boston_data$BLK_Playoff, paired = TRUE)
+t.test(boston_data$DREB_Regular, boston_data$DREB_Playoff, paired = TRUE)
+t.test(boston_data$TOV_Regular, boston_data$TOV_Playoff, paired = TRUE)
+t.test(boston_data$PLUS_MINUS_Regular, boston_data$PLUS_MINUS_Playoff, paired = TRUE)
+
+# Step 5: MANOVA Model
+boston_manova_model <- manova(cbind(STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular) ~
+                               cbind(STL_Playoff, BLK_Playoff, DREB_Playoff, TOV_Playoff, PLUS_MINUS_Playoff), 
+                             data = boston_data)
+summary(boston_manova_model)
+
+## Oklahoma City Thunder Tests - Significant ##
+
+# Step 1: Filter data for Oklahoma City Thunder Tests
+okc_data <- merged_data %>%
+  filter(TEAM_NAME == "Oklahoma City Thunder")
+
+# Step 2: Create difference scores for inspection
+okc_data$STL_diff <- okc_data$STL_Playoff - okc_data$STL_Regular
+okc_data$BLK_diff <- okc_data$BLK_Playoff - okc_data$BLK_Regular
+okc_data$DREB_diff <- okc_data$DREB_Playoff - okc_data$DREB_Regular
+okc_data$TOV_diff <- okc_data$TOV_Playoff - okc_data$TOV_Regular
+okc_data$PLUS_DIFF <- okc_data$PLUS_MINUS_Playoff - okc_data$PLUS_MINUS_Regular
+
+# Step 3: Shapiro-Wilk Tests
+shapiro.test(okc_data$STL_diff)
+shapiro.test(okc_data$BLK_diff)
+shapiro.test(okc_data$DREB_diff)
+shapiro.test(okc_data$TOV_diff)
+shapiro.test(okc_data$PLUS_DIFF)
+
+# Step 4: As a result of the P values indicating normal distribution t-test applied
+t.test(okc_data$STL_Regular, okc_data$STL_Playoff, paired = TRUE)
+t.test(okc_data$DREB_Regular, okc_data$DREB_Playoff, paired = TRUE)
+t.test(okc_data$TOV_Regular, okc_data$TOV_Playoff, paired = TRUE)
+
+# Stp 4.b - Wilcoxon Signed-Rank test as a result of shapiro test
+wilcox.test(okc_data$PLUS_MINUS_Regular, okc_data$PLUS_MINUS_Playoff, paired = TRUE)
+wilcox.test(okc_data$BLK_Regular, okc_data$BLK_Playoff, paired = TRUE)
+
+# Step 5: MANOVA Model
+okc_manova_model <- manova(cbind(STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular) ~
+                                 cbind(STL_Playoff, BLK_Playoff, DREB_Playoff, TOV_Playoff), 
+                               data = okc_data)
+okc_manova_model2 <- manova(cbind(BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular) ~
+                                  cbind(BLK_Playoff, DREB_Playoff, TOV_Playoff, PLUS_MINUS_Playoff), 
+                                data = okc_data)
+summary(okc_manova_model)
+summary(okc_manova_model2)
+
+## San Antonio Spurs Tests - Stable ##
+
+# Step 1: Filter data for San Antonio Spurs Tests
+spurs_data <- merged_data %>%
+  filter(TEAM_NAME == "San Antonio Spurs")
+
+# Step 2: Create difference scores for inspection
+spurs_data$STL_diff <- spurs_data$STL_Playoff - spurs_data$STL_Regular
+spurs_data$BLK_diff <- spurs_data$BLK_Playoff - spurs_data$BLK_Regular
+spurs_data$DREB_diff <- spurs_data$DREB_Playoff - spurs_data$DREB_Regular
+spurs_data$TOV_diff <- spurs_data$TOV_Playoff - spurs_data$TOV_Regular
+spurs_data$PLUS_DIFF <- spurs_data$PLUS_MINUS_Playoff - spurs_data$PLUS_MINUS_Regular
+
+# Step 3: Shapiro-Wilk Tests
+shapiro.test(spurs_data$STL_diff)
+shapiro.test(spurs_data$BLK_diff)
+shapiro.test(spurs_data$DREB_diff)
+shapiro.test(spurs_data$TOV_diff)
+shapiro.test(spurs_data$PLUS_DIFF)
+
+# Step 4: As a result of the P values indicating normal distribution t-test applied
+t.test(spurs_data$STL_Regular, spurs_data$STL_Playoff, paired = TRUE)
+t.test(spurs_data$BLK_Regular, spurs_data$BLK_Playoff, paired = TRUE)
+t.test(spurs_data$DREB_Regular, spurs_data$DREB_Playoff, paired = TRUE)
+t.test(spurs_data$TOV_Regular, spurs_data$TOV_Playoff, paired = TRUE)
+t.test(spurs_data$PLUS_MINUS_Regular, spurs_data$PLUS_MINUS_Playoff, paired = TRUE)
+
+# Step 5: MANOVA Model
+spurs_manova_model <- manova(cbind(STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular) ~
+                             cbind(STL_Playoff, BLK_Playoff, DREB_Playoff, TOV_Playoff), 
+                           data = spurs_data)
+spurs_manova_model2 <- manova(cbind(BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular) ~
+                              cbind(BLK_Playoff, DREB_Playoff, TOV_Playoff, PLUS_MINUS_Playoff), 
+                            data = spurs_data)
+summary(spurs_manova_model)
+summary(spurs_manova_model2)
+
+## Portland Trail Blazers Tests ##
+
+## Blazers - Stable ##
+
+# Step 1: Filter data for Portland Trail Blazers Tests
+blazers_data <- merged_data %>%
+  filter(TEAM_NAME == "Portland Trail Blazers")
+
+# Step 2: Create difference scores for inspection
+blazers_data$STL_diff <- blazers_data$STL_Playoff - blazers_data$STL_Regular
+blazers_data$BLK_diff <- blazers_data$BLK_Playoff - blazers_data$BLK_Regular
+blazers_data$DREB_diff <- blazers_data$DREB_Playoff - blazers_data$DREB_Regular
+blazers_data$TOV_diff <- blazers_data$TOV_Playoff - blazers_data$TOV_Regular
+blazers_data$PLUS_DIFF <- blazers_data$PLUS_MINUS_Playoff - blazers_data$PLUS_MINUS_Regular
+
+# Step 3: Shapiro-Wilk Tests
+shapiro.test(blazers_data$STL_diff)
+shapiro.test(blazers_data$BLK_diff)
+shapiro.test(blazers_data$DREB_diff)
+shapiro.test(blazers_data$TOV_diff)
+shapiro.test(blazers_data$PLUS_DIFF)
+
+# Step 4: As a result of the P values indicating normal distribution t-test applied
+t.test(blazers_data$STL_Regular, blazers_data$STL_Playoff, paired = TRUE)
+t.test(blazers_data$BLK_Regular, blazers_data$BLK_Playoff, paired = TRUE)
+t.test(blazers_data$DREB_Regular, blazers_data$DREB_Playoff, paired = TRUE)
+t.test(blazers_data$TOV_Regular, blazers_data$TOV_Playoff, paired = TRUE)
+t.test(blazers_data$PLUS_MINUS_Regular, blazers_data$PLUS_MINUS_Playoff, paired = TRUE)
+
+# Step 5: MANOVA Model
+blazers_manova_model <- manova(cbind(STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular) ~
+                                  cbind(STL_Playoff, BLK_Playoff, DREB_Playoff, TOV_Playoff), 
+                                data = blazers_data)
+blazers_manova_model2 <- manova(cbind(BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular) ~
+                                 cbind(BLK_Playoff, DREB_Playoff, TOV_Playoff, PLUS_MINUS_Playoff), 
+                               data = blazers_data)
+summary(blazers_manova_model)
+summary(blazers_manova_model2)
+
+## Visualisations ##
+
+# Define selected teams
+selected_teams <- c("Miami Heat", "Boston Celtics", 
+                    "Oklahoma City Thunder", "Indiana Pacers", 
+                    "San Antonio Spurs", "Portland Trail Blazers")
+## Bar chart
+shift_data <- merged_data %>%
+  filter(TEAM_NAME %in% selected_teams) %>%
+  mutate(across(c(STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular), 
+                ~ . - get(sub("_Regular", "_Playoff", cur_column())), 
+                .names = "{.col}_Change")) %>%
+  select(TEAM_NAME, contains("_Change")) %>%
+  pivot_longer(-TEAM_NAME, names_to = "Metric", values_to = "Change") %>%
+  mutate(Metric = sub("_Regular_Change", "", Metric),
+         Metric = factor(Metric, levels = c("STL", "BLK", "DREB", "TOV", "PLUS_MINUS")))
+
+ggplot(shift_data, aes(x = Metric, y = Change, fill = TEAM_NAME)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "Metric Shifts (Regular - Playoff) for Selected Teams", 
+       y = "Change", x = "Metric") +
+  theme_minimal()
+
+
+## Scatter plot
+scatter_data <- merged_data %>%
+  filter(TEAM_NAME %in% selected_teams) %>%
+  select(TEAM_NAME, SEASON_YEAR,
+         STL_Regular, STL_Playoff,
+         BLK_Regular, BLK_Playoff,
+         DREB_Regular, DREB_Playoff,
+         TOV_Regular, TOV_Playoff,
+         PLUS_MINUS_Regular, PLUS_MINUS_Playoff) %>%
+  pivot_longer(cols = -c(TEAM_NAME, SEASON_YEAR),
+               names_to = c("Metric", "Season"),
+               names_pattern = "(.*)_(Regular|Playoff)",
+               values_to = "Value") %>%
+  pivot_wider(names_from = Season, values_from = Value)
+
+ggplot(scatter_data, aes(x = Regular, y = Playoff, colour = TEAM_NAME)) +
+  geom_point(size = 3) +
+  geom_abline(linetype = "dashed") +
+  facet_wrap(~ Metric, scales = "free") +
+  labs(title = "Regular vs Playoff Metrics (Selected Teams)", 
+       x = "Regular Season", y = "Playoffs") +
+  theme_minimal()
+
+
+# 4. Heatmaps of Metric Changes by Team
+
+heatmap_data <- merged_data %>%
+  filter(TEAM_NAME %in% selected_teams) %>%
+  mutate(across(c(STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular), 
+                ~ . - get(sub("_Regular", "_Playoff", cur_column())), 
+                .names = "{.col}_Change")) %>%
+  select(TEAM_NAME, contains("_Change")) %>%
+  pivot_longer(-TEAM_NAME, names_to = "Metric", values_to = "Change") %>%
+  mutate(Metric = sub("_Regular_Change", "", Metric),
+         Metric = factor(Metric, levels = c("STL", "BLK", "DREB", "TOV", "PLUS_MINUS")))
+
+ggplot(heatmap_data, aes(x = Metric, y = TEAM_NAME, fill = Change)) +
+  geom_tile(colour = "white") +
+  scale_fill_gradient2(low = "red", mid = "white", high = "blue", midpoint = 0) +
+  labs(title = "Heatmap of Metric Changes (Regular - Playoff)", 
+       x = "Metric", y = "Team", fill = "Change") +
+  theme_minimal()
+
+# 5. Line graphs over time
+
+filtered_data <- merged_data %>%
+  filter(TEAM_NAME %in% selected_teams)
+
+# Reshape into long format
+long_data <- filtered_data %>%
+  pivot_longer(cols = c(STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular,
+                        STL_Playoff, BLK_Playoff, DREB_Playoff, TOV_Playoff, PLUS_MINUS_Playoff),
+               names_to = c("Metric", "SeasonType"),
+               names_sep = "_",
+               values_to = "Value")
+
+# Line graph of metric trends over time
+ggplot(long_data, aes(x = SEASON_YEAR, y = Value, color = SeasonType, group = SeasonType)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~ Metric, scales = "free_y") +
+  labs(title = "Trends in Metrics Over Time (Regular vs Playoff)",
+       x = "Season Year",
+       y = "Metric Value") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_manual(values = c("Regular" = "blue", "Playoff" = "red"))
+
+long_data <- filtered_data %>%
+  pivot_longer(
+    cols = c(STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular,
+             STL_Playoff, BLK_Playoff, DREB_Playoff, TOV_Playoff, PLUS_MINUS_Playoff),
+    names_to = c("Metric", "SeasonType"),
+    names_pattern = "(.*)_(Regular|Playoff)",  # Regex keeps PLUS_MINUS intact
+    values_to = "Value"
+  )
+
+# Line graph: trends over time for each team
+ggplot(long_data, aes(x = SEASON_YEAR, y = Value, color = SeasonType, group = SeasonType)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  facet_grid(Metric ~ TEAM_NAME, scales = "free_y") +
+  labs(title = "Trends in Defensive Metrics Over Time (Regular vs Playoff)",
+       x = "Season Year",
+       y = "Metric Value",
+       color = "Season Type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_manual(values = c("Regular" = "blue", "Playoff" = "red"))
+
+## Boston Celtics - Multiple Linear Regression (MLR) ##
+
+# Outcome variable
+y <- boston_data$PLUS_MINUS_Playoff
+
+# Create difference variables for use as predictors
+boston_data$STL_diff   <- boston_data$STL_Playoff  - boston_data$STL_Regular
+boston_data$BLK_diff   <- boston_data$BLK_Playoff  - boston_data$BLK_Regular
+boston_data$DREB_diff  <- boston_data$DREB_Playoff - boston_data$DREB_Regular
+boston_data$TOV_diff   <- boston_data$TOV_Playoff  - boston_data$TOV_Regular
+boston_data$PLUS_DIFF  <- boston_data$PLUS_MINUS_Playoff - boston_data$PLUS_MINUS_Regular
+
+# Predictor set (adjusted to include all relevant metrics and differences)
+predictors <- c("STL_Regular", "BLK_Regular", "DREB_Regular", "TOV_Regular",
+                "STL_diff", "BLK_diff", "DREB_diff", "TOV_diff")
+
+# Prepare dataset for modelling (remove rows with NA values)
+mlr_data <- na.omit(boston_data[, c("PLUS_MINUS_Playoff", predictors)])
+
+# Fit MLR model
+mlr_fit <- lm(PLUS_MINUS_Playoff ~ ., data = mlr_data)
+summary(mlr_fit)  # View regression coefficients, p-values, R²
+
+# --- Multicollinearity check ---
+vif_values <- car::vif(mlr_fit)
+print(vif_values)  # Variance Inflation Factors
+
+# Homoscedasticity test
+bp_test <- bptest(mlr_fit)
+print(bp_test)
+
+# --- Leave-One-Season-Out Cross-Validation ---
+seasons <- mlr_data$SEASON_YEAR
+pred <- rep(NA, length(seasons))
+
+for (i in seq_along(seasons)) {
+  train <- mlr_data[seasons != seasons[i], ]
+  test  <- mlr_data[seasons == seasons[i], ]
+  fit_i <- lm(PLUS_MINUS_Playoff ~ ., data = train)
+  pred[seasons == seasons[i]] <- predict(fit_i, newdata = test)
+}
+
+cv_rmse <- sqrt(mean((pred - mlr_data$PLUS_MINUS_Playoff)^2, na.rm = TRUE))
+cat("Cross-validated RMSE:", cv_rmse, "\n")
+
+# --- Lasso Regularization for variable selection ---
+set.seed(123)  # Reproducibility
+
+# Standardize predictors for Lasso
+mx <- scale(model.matrix(PLUS_MINUS_Playoff ~ ., data = mlr_data)[, -1])
+lasso_y <- mlr_data$PLUS_MINUS_Playoff
+
+cv_lasso <- cv.glmnet(mx, lasso_y, alpha = 1, nfolds = length(lasso_y))
+coef(cv_lasso, s = "lambda.min")  # Coefficients at optimal lambda
+
+# --- Save key results for reporting ---
+adj_r2 <- summary(mlr_fit)$adj.r.squared
+cat("Adjusted R²:", adj_r2, "\n")
+cat("VIF values:\n"); print(vif_values)
+cat("Breusch-Pagan p-value:", bp_test$p.value, "\n")
+cat("Cross-validated RMSE:", cv_rmse, "\n")
+
+# Tidy coefficients for plotting
+coef_df <- broom::tidy(mlr_fit, conf.int = TRUE)
+
+vif_df <- data.frame(
+  Variable = names(vif_values),
+  VIF = vif_values
+)
+
+ggplot(vif_df, aes(x = reorder(Variable, VIF), y = VIF, fill = VIF)) +
+  geom_col() +
+  geom_hline(yintercept = 5, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(
+    title = "Multicollinearity Check (VIF Values)",
+    x = "Predictor Variables",
+    y = "VIF"
+  ) +
+  theme_minimal(base_size = 12)
+
+## Indiana Pacers - Multiple Linear Regression (MLR) ##
+
+# Outcome variable
+
+# Outcome variable
+y2 <- pacers_data$PLUS_MINUS_Playoff
+
+# Create difference variables
+pacers_data$STL_diff   <- pacers_data$STL_Playoff  - pacers_data$STL_Regular
+pacers_data$BLK_diff   <- pacers_data$BLK_Playoff  - pacers_data$BLK_Regular
+pacers_data$DREB_diff  <- pacers_data$DREB_Playoff - pacers_data$DREB_Regular
+pacers_data$TOV_diff   <- pacers_data$TOV_Playoff  - pacers_data$TOV_Regular
+pacers_data$PLUS_DIFF  <- pacers_data$PLUS_MINUS_Playoff - pacers_data$PLUS_MINUS_Regular
+
+# Predictor set (same structure for comparability)
+predictors <- c("STL_Regular", "BLK_Regular", "DREB_Regular", "TOV_Regular",
+                "STL_diff", "BLK_diff", "DREB_diff", "TOV_diff")
+
+# Prepare dataset for modelling (drop any NAs)
+mlr_data <- na.omit(pacers_data[, c("PLUS_MINUS_Playoff", predictors)])
+
+# Fit MLR model
+mlr_fit <- lm(PLUS_MINUS_Playoff ~ ., data = mlr_data)
+summary(mlr_fit)
+
+# --- Multicollinearity check ---
+vif_values <- car::vif(mlr_fit)
+print(vif_values)
+
+# --- Homoscedasticity test ---
+bp_test <- bptest(mlr_fit)
+print(bp_test)
+
+# --- Leave-One-Season-Out Cross-Validation ---
+seasons <- pacers_data$SEASON_YEAR
+pred <- rep(NA, length(seasons))
+for (i in seq_along(seasons)) {
+  train <- mlr_data[seasons != seasons[i], ]
+  test  <- mlr_data[seasons == seasons[i], ]
+  fit_i <- lm(PLUS_MINUS_Playoff ~ ., data = train)
+  pred[seasons == seasons[i]] <- predict(fit_i, newdata = test)
+}
+cv_rmse <- sqrt(mean((pred - y)^2, na.rm = TRUE))
+cat("Cross-validated RMSE:", cv_rmse, "\n")
+
+# --- Lasso Regularization (for variable selection) ---
+set.seed(123)
+mx <- scale(model.matrix(PLUS_MINUS_Playoff ~ ., data = mlr_data)[, -1])
+lasso_y <- mlr_data$PLUS_MINUS_Playoff
+
+cv_lasso <- cv.glmnet(mx, lasso_y, alpha = 1, nfolds = length(lasso_y))
+coef(cv_lasso, s = "lambda.min")
+
+# --- Save key results for reporting ---
+adj_r2 <- summary(mlr_fit)$adj.r.squared
+cat("Adjusted R²:", adj_r2, "\n")
+cat("VIF values:\n"); print(vif_values)
+cat("Breusch-Pagan p-value:", bp_test$p.value, "\n")
+cat("Cross-validated RMSE:", cv_rmse, "\n")
+
+## Time Series ##
+
+# Filter Boston Celtics data
+team_data <- merged_data %>%
+  filter(TEAM_NAME == "Boston Celtics") %>%
+  select(SEASON_YEAR, 
+         STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular,
+         STL_Playoff, BLK_Playoff, DREB_Playoff, TOV_Playoff)
+
+team_data$Season <- factor(team_data$SEASON_YEAR, levels = unique(team_data$SEASON_YEAR))
+
+# Reshape into long format (keep both Regular + Playoff)
+team_long <- team_data %>%
+  pivot_longer(
+    cols = -c(SEASON_YEAR, Season),
+    names_to = c("Metric", "Type"),
+    names_sep = "_",
+    values_to = "Value"
+  )
+
+# Plot: all metrics in one graph, Regular vs Playoff distinguished by linetype
+ggplot(team_long, aes(x = Season, y = Value, color = Metric, linetype = Type, group = interaction(Metric, Type))) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  labs(
+    title = "Boston Celtics Defensive Metrics Over Time: Regular vs Playoffs",
+    x = "Season", y = "Metric Value", 
+    color = "Metric", linetype = "Type"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+## Boston Celtics - Time Series Analysis ##
+
+# Step 1: Prepare Boston data
+boston_ts_data <- merged_data %>%
+  filter(TEAM_NAME == "Boston Celtics") %>%
+  select(SEASON_YEAR, 
+         STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular,
+         STL_Playoff, BLK_Playoff, DREB_Playoff, TOV_Playoff, PLUS_MINUS_Playoff)
+
+boston_ts_data$Season <- factor(boston_ts_data$SEASON_YEAR, levels = unique(boston_ts_data$SEASON_YEAR))
+
+# Step 2: Visualization of Regular vs Playoff Trends
+boston_long <- boston_ts_data %>%
+  pivot_longer(
+    cols = -c(SEASON_YEAR, Season),
+    names_to = c("Metric", "Type"),
+    names_sep = "_",
+    values_to = "Value"
+  )
+
+ggplot(boston_long, aes(x = Season, y = Value, color = Metric, linetype = Type, group = interaction(Metric, Type))) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  labs(
+    title = "Boston Celtics Defensive Metrics Over Time: Regular vs Playoffs",
+    x = "Season", y = "Metric Value", 
+    color = "Metric", linetype = "Type"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Step 3: Time Series Object for Modelling
+# Focus on PLUS_MINUS_Playoff as outcome
+start_year <- as.numeric(substr(min(boston_ts_data$SEASON_YEAR), 1, 4))
+ts_plus <- ts(boston_ts_data$PLUS_MINUS_Playoff, start = start_year, frequency = 1)
+
+
+# Step 4: Stationarity check
+adf_test <- tseries::adf.test(ts_plus, alternative = "stationary")
+print(adf_test)
+
+# Step 5: Fit ARIMA model
+fit_arima <- auto.arima(ts_plus)
+summary(fit_arima)
+
+## Time Series Predictive ##
+boston_ts_data <- merged_data %>%
+  filter(TEAM_NAME == "Boston Celtics") %>%
+  arrange(SEASON_YEAR) %>%
+  select(SEASON_YEAR, STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular, PLUS_MINUS_Regular,
+         STL_Playoff, BLK_Playoff, DREB_Playoff, TOV_Playoff, PLUS_MINUS_Playoff)
+
+dreb_ts <- ts(boston_ts_data$DREB_Regular, start = 2010, frequency = 1)
+
+# Fit ARIMA model
+fit_dreb <- auto.arima(dreb_ts)
+
+# Forecast next 3 years (hypothetical future seasons)
+forecast_dreb <- forecast(fit_dreb, h = 3)
+
+# Plot it
+autoplot(forecast_dreb) +
+  labs(title = "Forecast of Defensive Rebounds (Regular Season)", y = "DREB", x = "Season")
+
+# Historical data
+hist_df <- tibble(
+  idx    = seq_along(boston_ts_data$SEASON_YEAR),
+  season = boston_ts_data$SEASON_YEAR,
+  value  = as.numeric(dreb_ts)
+)
+
+# Forecast data
+fc_raw <- as.data.frame(forecast_dreb)
+future_seasons <- paste0(
+  as.numeric(substr(max(boston_ts_data$SEASON_YEAR), 1, 4)) + 1:3, "-",
+  sprintf("%02d", (as.numeric(substr(max(boston_ts_data$SEASON_YEAR), 1, 4)) + 2:4) %% 100)
+)
+
+fc_df <- tibble(
+  idx    = max(hist_df$idx) + seq_len(nrow(fc_raw)),
+  season = future_seasons,
+  mean   = fc_raw$`Point Forecast`,
+  lo95   = fc_raw$`Lo 95`,
+  hi95   = fc_raw$`Hi 95`
+)
+
+# Combine labels
+all_idx <- c(hist_df$idx, fc_df$idx)
+all_seasons <- c(hist_df$season, fc_df$season)
+
+# Plot with numeric x and season labels
+ggplot() +
+  geom_line(data = hist_df, aes(x = idx, y = value), size = 1) +
+  geom_ribbon(data = fc_df, aes(x = idx, ymin = lo95, ymax = hi95), 
+              alpha = 0.2, fill = "blue") +
+  geom_line(data = fc_df, aes(x = idx, y = mean), 
+            color = "blue", linetype = "dashed", size = 1) +
+  scale_x_continuous(breaks = all_idx, labels = all_seasons) +
+  labs(title = "Forecast of Defensive Rebounds (Regular Season)",
+       x = "Season", y = "DREB") +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+boston_lm <- lm(PLUS_MINUS_Playoff ~ STL_Regular + BLK_Regular + DREB_Regular + TOV_Regular, data = boston_ts_data)
+summary(boston_lm)
+
+boston_ts_data <- boston_ts_data %>%
+  mutate(
+    STL_Regular_Lag = lag(STL_Regular),
+    BLK_Regular_Lag = lag(BLK_Regular),
+    DREB_Regular_Lag = lag(DREB_Regular),
+    TOV_Regular_Lag = lag(TOV_Regular)
+  )
+
+# Predicting current year's playoff success based on previous year's regular season defense
+lag_model <- lm(PLUS_MINUS_Playoff ~ STL_Regular_Lag + BLK_Regular_Lag + DREB_Regular_Lag + TOV_Regular_Lag,
+                data = boston_ts_data)
+
+summary(lag_model)
+
+# Reshape data for plotting
+boston_long <- boston_ts_data %>%
+  pivot_longer(cols = c(STL_Regular, BLK_Regular, DREB_Regular, TOV_Regular),
+               names_to = "Metric", values_to = "Value")
+
+ggplot(boston_long, aes(x = SEASON_YEAR, y = Value, color = Metric, group = Metric)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  labs(title = "Boston Celtics: Defensive Metrics Over Time",
+       x = "Season", y = "Metric Value") +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Add predictions to the dataset
+boston_ts_data$Predicted_PM <- predict(lag_model, newdata = boston_ts_data)
+
+lag_model_dreb <- lm(DREB_Playoff ~ STL_Regular_Lag + BLK_Regular_Lag + DREB_Regular_Lag + TOV_Regular_Lag, data = boston_ts_data)
+
+# Add predictions
+boston_ts_data$Predicted_DREB <- predict(lag_model_dreb, newdata = boston_ts_data)
+
+ggplot(boston_ts_data, aes(x = DREB_Playoff, y = Predicted_DREB)) +
+  geom_point(color = "#1f77b4", size = 3) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray40") +
+  labs(
+    title = "Actual vs Predicted Playoff Defensive Rebounds (Boston Celtics)",
+    x = "Actual DREB in Playoffs",
+    y = "Predicted DREB in Playoffs"
+  ) +
+  theme_minimal(base_size = 13)
